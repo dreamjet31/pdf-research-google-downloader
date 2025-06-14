@@ -27,12 +27,56 @@ logger = logging.getLogger(__name__)
 class PDFDownloader:
     """Main class for downloading PDFs from Google search results"""
     
-    def __init__(self, config: Config = None):
+    def __init__(self, config: Config = None, status_callback=None):
         self.config = config or Config()
         self.driver = None
         self.ua = UserAgent() if self.config.USER_AGENT_ROTATION else None
         self.download_path = self.config.get_download_path()
+        self.status_callback = status_callback
+        self.should_resume = False
+        self.should_stop = False
         
+    def resume_download(self):
+        """Set flag to resume download after CAPTCHA"""
+        self.should_resume = True
+        logger.info("🔄 Resume flag set - download will continue")
+    
+    def stop_download(self):
+        """Set flag to stop download"""
+        self.should_stop = True
+        logger.info("🛑 Stop flag set - download will be terminated")
+        
+        # Close the browser if it's open
+        if self.driver:
+            try:
+                self.driver.quit()
+                logger.info("🔒 Browser closed due to stop request")
+            except Exception as e:
+                logger.warning(f"⚠️ Error closing browser: {e}")
+    
+    def _is_browser_responsive(self) -> bool:
+        """Check if the browser is still responsive"""
+        try:
+            if not self.driver:
+                return False
+            # Try to get the current URL to check if browser is responsive
+            self.driver.current_url
+            return True
+        except Exception:
+            return False
+    
+    def _handle_browser_closure(self):
+        """Handle unexpected browser closure"""
+        if self.status_callback:
+            self.status_callback({
+                'is_running': False,
+                'captcha_detected': False,
+                'captcha_message': None,
+                'download_paused': False,
+                'error': 'Download process stopped - browser was closed unexpectedly'
+            })
+        logger.error("🚨 Browser was closed unexpectedly - download process stopped")
+    
     def _setup_driver(self) -> webdriver.Chrome:
         """Initialize and configure Chrome WebDriver"""
         chrome_options = ChromeOptions()
@@ -78,6 +122,49 @@ class PDFDownloader:
         ]
         return any(phrase in page_text for phrase in detection_phrases)
     
+    def _handle_captcha_detection(self, driver: webdriver.Chrome) -> bool:
+        """Handle CAPTCHA detection and wait for resolution"""
+        if self.status_callback:
+            # Update status to indicate CAPTCHA detected
+            self.status_callback({
+                'captcha_detected': True,
+                'captcha_message': 'CAPTCHA detected! Please solve it manually and click Resume.',
+                'download_paused': True
+            })
+            
+            # Wait for CAPTCHA to be resolved
+            while True:
+                # Check if user wants to resume
+                if self.should_resume:
+                    self.should_resume = False
+                    self.status_callback({
+                        'captcha_detected': False,
+                        'captcha_message': None,
+                        'download_paused': False
+                    })
+                    logger.info("✅ Download resumed by user")
+                    return True
+                
+                # Check if CAPTCHA is still present
+                if not self._is_robot_detected(driver):
+                    # CAPTCHA resolved automatically, update status
+                    self.status_callback({
+                        'captcha_detected': False,
+                        'captcha_message': None,
+                        'download_paused': False
+                    })
+                    logger.info("✅ CAPTCHA resolved automatically, continuing download")
+                    return True
+                
+                # Wait a bit before checking again
+                time.sleep(2)
+        else:
+            # Fallback to console input for CLI usage
+            logger.warning("🚨 Robot detected! Please manually resolve the issue.")
+            input("Press Enter after manually resolving the robot issue...")
+            logger.info("✅ Continuing after manual resolution")
+            return True
+    
     def _save_pdf(self, url: str, save_path: str) -> bool:
         """Download and save a PDF file"""
         try:
@@ -115,16 +202,24 @@ class PDFDownloader:
         logger.info(f"🔍 Searching for: {keyword}")
         
         while len(pdf_urls) < max_pdfs and page_num < self.config.MAX_PAGES_PER_SEARCH:
+            # Check if download should be stopped
+            if self.should_stop:
+                logger.info("🛑 Download stopped by user")
+                return pdf_urls
+            
             target_url = base_url + f"&start={page_num * 10}"
             
             try:
                 self.driver.get(target_url)
                 
+                # Check if browser is still responsive
+                if not self._is_browser_responsive():
+                    self._handle_browser_closure()
+                    return pdf_urls
+                
                 # Check for robot detection
                 if self._is_robot_detected(self.driver):
-                    logger.warning("🚨 Robot detected! Please manually resolve the issue.")
-                    input("Press Enter after manually resolving the robot issue...")
-                    logger.info("✅ Continuing after manual resolution")
+                    self._handle_captcha_detection(self.driver)
                     continue
                 
                 # Wait for page to load
@@ -159,6 +254,15 @@ class PDFDownloader:
         """Download PDFs for a specific keyword"""
         max_pdfs = max_pdfs or self.config.MAX_PDF_PER_KEYWORD
         
+        # Check if browser is still responsive
+        if not self._is_browser_responsive():
+            self._handle_browser_closure()
+            return {
+                'keyword': keyword,
+                'field': field_name,
+                'error': 'Browser was closed unexpectedly'
+            }
+        
         # Create directories
         field_folder = os.path.join(self.download_path, field_name.replace(' ', '_'))
         keyword_folder = os.path.join(field_folder, keyword.replace(' ', '_'))
@@ -192,6 +296,11 @@ class PDFDownloader:
         
         results = []
         for keyword in keywords:
+            # Check if download should be stopped
+            if self.should_stop:
+                logger.info("🛑 Download stopped by user")
+                break
+                
             try:
                 result = self.download_pdfs_for_keyword(keyword, field_name, max_pdfs_per_keyword)
                 results.append(result)
@@ -217,11 +326,24 @@ class PDFDownloader:
             all_results = {}
             
             for field_name, keywords in fields_keywords.items():
+                # Check if download should be stopped
+                if self.should_stop:
+                    logger.info("🛑 Download stopped by user")
+                    break
+                
+                # Check if browser is still responsive
+                if not self._is_browser_responsive():
+                    self._handle_browser_closure()
+                    break
+                    
                 logger.info(f"📂 Processing field: {field_name}")
                 results = self.download_pdfs_for_field(field_name, keywords)
                 all_results[field_name] = results
             
-            logger.info("🎉 All downloads completed!")
+            if self.should_stop:
+                logger.info("🛑 Download process terminated")
+            else:
+                logger.info("🎉 All downloads completed!")
             return all_results
             
         except Exception as e:
@@ -229,8 +351,11 @@ class PDFDownloader:
             raise
         finally:
             if self.driver:
-                self.driver.quit()
-                logger.info("🔒 Browser closed")
+                try:
+                    self.driver.quit()
+                    logger.info("🔒 Browser closed")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error closing browser: {e}")
     
     def download_single_keyword(self, keyword: str, field_name: str = "custom", max_pdfs: int = None) -> Dict[str, any]:
         """Download PDFs for a single keyword"""

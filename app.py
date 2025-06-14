@@ -18,21 +18,39 @@ download_status = {
     'is_running': False,
     'progress': {},
     'results': {},
-    'error': None
+    'error': None,
+    'captcha_detected': False,
+    'captcha_message': None,
+    'download_paused': False
 }
+
+# Global variable to store downloader instance
+current_downloader = None
 
 def run_download_task(fields_keywords: Dict[str, List[str]], custom_keywords: List[str] = None):
     """Run download task in background thread"""
     global download_status
+    
+    def update_status(status_updates):
+        """Callback function to update global status"""
+        global download_status
+        download_status.update(status_updates)
     
     try:
         download_status['is_running'] = True
         download_status['progress'] = {}
         download_status['results'] = {}
         download_status['error'] = None
+        download_status['captcha_detected'] = False
+        download_status['captcha_message'] = None
+        download_status['download_paused'] = False
         
-        # Initialize downloader
-        downloader = PDFDownloader()
+        # Initialize downloader with status callback
+        downloader = PDFDownloader(status_callback=update_status)
+        
+        # Store downloader instance globally
+        global current_downloader
+        current_downloader = downloader
         
         # Add custom keywords if provided
         if custom_keywords:
@@ -44,9 +62,13 @@ def run_download_task(fields_keywords: Dict[str, List[str]], custom_keywords: Li
         download_status['results'] = results
         download_status['is_running'] = False
         
+        # Clean up downloader reference
+        current_downloader = None
+        
     except Exception as e:
         download_status['error'] = str(e)
         download_status['is_running'] = False
+        current_downloader = None
 
 @app.route('/')
 def index():
@@ -164,6 +186,63 @@ def health_check():
         'timestamp': datetime.now().isoformat(),
         'download_running': download_status['is_running']
     })
+
+@app.route('/api/resume-download', methods=['POST'])
+def resume_download():
+    """Resume download after CAPTCHA is solved"""
+    global download_status, current_downloader
+    
+    if not download_status['captcha_detected']:
+        return jsonify({'error': 'No CAPTCHA detected to resume from'}), 400
+    
+    if not current_downloader:
+        return jsonify({'error': 'No active downloader found'}), 400
+    
+    try:
+        # Call the downloader's resume method
+        current_downloader.resume_download()
+        
+        # Reset CAPTCHA status
+        download_status['captcha_detected'] = False
+        download_status['captcha_message'] = None
+        download_status['download_paused'] = False
+        
+        return jsonify({
+            'message': 'Download resumed successfully',
+            'status': 'resumed'
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stop-download', methods=['POST'])
+def stop_download():
+    """Stop the current download process"""
+    global download_status, current_downloader
+    
+    if not download_status['is_running'] and not download_status['captcha_detected']:
+        return jsonify({'error': 'No download in progress to stop'}), 400
+    
+    try:
+        # Stop the downloader if it exists
+        if current_downloader:
+            current_downloader.stop_download()
+            current_downloader = None
+        
+        # Update status to indicate download was stopped
+        download_status['is_running'] = False
+        download_status['captcha_detected'] = False
+        download_status['captcha_message'] = None
+        download_status['download_paused'] = False
+        download_status['error'] = 'Download stopped by user'
+        
+        return jsonify({
+            'message': 'Download stopped successfully',
+            'status': 'stopped'
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=Config.DEBUG, host='0.0.0.0', port=5000) 

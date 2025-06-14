@@ -80,6 +80,37 @@
             border-color: #667eea;
             box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
         }
+        .captcha-card {
+            border: 2px solid #ffc107;
+            background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+        }
+        .captcha-card .card-title {
+            color: #856404;
+        }
+        .btn-warning {
+            background: linear-gradient(45deg, #ffc107, #ff8c00);
+            border: none;
+            border-radius: 25px;
+            padding: 10px 25px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        .btn-warning:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(255, 193, 7, 0.3);
+        }
+        .btn-danger {
+            background: linear-gradient(45deg, #dc3545, #c82333);
+            border: none;
+            border-radius: 25px;
+            padding: 12px 30px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(220, 53, 69, 0.3);
+        }
     </style>
 </head>
 <body>
@@ -107,6 +138,28 @@
                 </div>
             </div>
 
+            <!-- CAPTCHA Status Card -->
+            <div class="card mb-4 captcha-card" id="captchaCard" style="display: none;">
+                <div class="card-body">
+                    <h5 class="card-title text-warning">
+                        <i class="fas fa-shield-alt me-2"></i>CAPTCHA Detected
+                    </h5>
+                    <div class="alert alert-warning" role="alert">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <span id="captchaMessage">CAPTCHA detected! Please solve it manually.</span>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <small class="text-muted">
+                            <i class="fas fa-info-circle me-1"></i>
+                            Please solve the CAPTCHA in the browser window and then click Resume.
+                        </small>
+                        <button class="btn btn-warning" id="resumeButton" onclick="resumeDownload()">
+                            <i class="fas fa-play me-2"></i>Resume Download
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Configuration Card -->
             <div class="card mb-4">
                 <div class="card-body">
@@ -122,18 +175,6 @@
                             <label class="form-label">Max pages per search</label>
                             <input type="number" class="form-control" id="maxPages" value="3" min="1" max="10">
                         </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Field Selection Card -->
-            <div class="card mb-4">
-                <div class="card-body">
-                    <h5 class="card-title">
-                        <i class="fas fa-list me-2"></i>Select Research Fields
-                    </h5>
-                    <div class="row" id="fieldsContainer">
-                        <!-- Fields will be populated here -->
                     </div>
                 </div>
             </div>
@@ -156,6 +197,9 @@
             <div class="text-center mb-4">
                 <button class="btn btn-primary btn-lg me-3" id="startDownload" onclick="startDownload()">
                     <i class="fas fa-download me-2"></i>Start Download
+                </button>
+                <button class="btn btn-danger btn-lg me-3" id="stopDownload" onclick="stopDownload()" style="display: none;">
+                    <i class="fas fa-stop me-2"></i>Stop Download
                 </button>
                 <button class="btn btn-outline-secondary btn-lg" onclick="refreshStatus()">
                     <i class="fas fa-sync-alt me-2"></i>Refresh Status
@@ -249,22 +293,56 @@
             const indicator = document.getElementById('statusIndicator');
             const statusText = document.getElementById('statusText');
             const statusDetails = document.getElementById('statusDetails');
+            const captchaCard = document.getElementById('captchaCard');
+            const startButton = document.getElementById('startDownload');
+            const stopButton = document.getElementById('stopDownload');
 
-            if (status.is_running) {
+            if (status.captcha_detected) {
+                // Show CAPTCHA status
+                indicator.className = 'status-indicator status-error';
+                statusText.textContent = 'CAPTCHA Detected';
+                statusDetails.innerHTML = '<small class="text-warning">Download paused - CAPTCHA needs to be solved</small>';
+                captchaCard.style.display = 'block';
+                document.getElementById('captchaMessage').textContent = status.captcha_message || 'CAPTCHA detected! Please solve it manually.';
+                document.getElementById('progressCard').style.display = 'none';
+                startButton.style.display = 'none';
+                stopButton.style.display = 'inline-block';
+            } else if (status.is_running) {
+                // Hide CAPTCHA card when running normally
+                captchaCard.style.display = 'none';
                 indicator.className = 'status-indicator status-running';
                 statusText.textContent = 'Download in progress...';
                 statusDetails.innerHTML = '<small class="text-muted">Processing keywords and downloading PDFs</small>';
                 document.getElementById('progressCard').style.display = 'block';
+                startButton.style.display = 'none';
+                stopButton.style.display = 'inline-block';
             } else if (status.error) {
+                captchaCard.style.display = 'none';
                 indicator.className = 'status-indicator status-error';
-                statusText.textContent = 'Error occurred';
-                statusDetails.innerHTML = `<small class="text-danger">${status.error}</small>`;
+                
+                // Check if it's a browser closure error
+                if (status.error.includes('browser was closed')) {
+                    statusText.textContent = 'Browser Closed';
+                    statusDetails.innerHTML = '<small class="text-danger">Download process stopped - browser was closed unexpectedly. Please restart the download.</small>';
+                } else if (status.error.includes('stopped by user')) {
+                    statusText.textContent = 'Download Stopped';
+                    statusDetails.innerHTML = '<small class="text-info">Download was stopped by user. You can start a new download when ready.</small>';
+                } else {
+                    statusText.textContent = 'Error occurred';
+                    statusDetails.innerHTML = `<small class="text-danger">${status.error}</small>`;
+                }
+                
                 document.getElementById('progressCard').style.display = 'none';
+                startButton.style.display = 'inline-block';
+                stopButton.style.display = 'none';
             } else {
+                captchaCard.style.display = 'none';
                 indicator.className = 'status-indicator status-idle';
                 statusText.textContent = 'Ready';
                 statusDetails.innerHTML = '<small class="text-muted">System ready for new downloads</small>';
                 document.getElementById('progressCard').style.display = 'none';
+                startButton.style.display = 'inline-block';
+                stopButton.style.display = 'none';
             }
 
             if (status.results && Object.keys(status.results).length > 0) {
@@ -334,6 +412,57 @@
             } catch (error) {
                 console.error('Error starting download:', error);
                 alert('Error starting download. Please try again.');
+            }
+        }
+
+        async function resumeDownload() {
+            try {
+                const response = await fetch('/api/resume-download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert('Download resumed successfully!');
+                    refreshStatus();
+                } else {
+                    alert('Error: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Error resuming download:', error);
+                alert('Error resuming download. Please try again.');
+            }
+        }
+
+        async function stopDownload() {
+            // Confirm before stopping
+            if (!confirm('Are you sure you want to stop the download? This action cannot be undone.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/stop-download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert('Download stopped successfully!');
+                    refreshStatus();
+                } else {
+                    alert('Error: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Error stopping download:', error);
+                alert('Error stopping download. Please try again.');
             }
         }
     </script>
