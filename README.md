@@ -42,8 +42,8 @@ pdf-downloader/
 1. **Clone the repository**
 
    ```bash
-   git clone <your-repo-url>
-   cd pdf-downloader
+   git clone https://github.com/dreamjet31/pdf-research-google-downloade
+   cd pdf-research-google-downloader
    ```
 
 2. **Create virtual environment**
